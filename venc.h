@@ -30,7 +30,7 @@ extern "C"{
 #define TEST_ARGB32_BLACK 0xFF000000
 #define TEST_ARGB32_TRANS 0x00000000
 extern bool thread0_start_play_ontime;
-
+void stop_all_media() ;
 void stop_media_cam();
 void video_packet_cb(MEDIA_BUFFER mb);
 

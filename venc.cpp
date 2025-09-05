@@ -43,9 +43,9 @@ extern "C"{
 }
 #include "rkmedia/rkmedia_api.h"
 #include "rkmedia/rkmedia_venc.h"
-#include "common/sample_common.h"
+
 #define DEVICE_ID "34020000001310008758"
-#define DEVICE_NAME      "34020000001320008758"
+#define DEVICE_NAME"34020000001320008758"
 
 #define CAP_PIC_PATH "/root/data/monitor/"
 #define ALRAM_PATH "/root/data/alarm/"
@@ -171,7 +171,12 @@ static const char *  cap_ontime_stamp = NULL;
 static const char *  cap_alarm_stamp = NULL;
 
 static int global_msgid = 1;
+// alarm event msgid
+static int global_alarm_inform_msgid = 1;
 
+static int global_cap_msgid = 1 ;
+
+static int global_cap_ontime_msgid = 1 ;
 
 int is_night_time(void) {
     time_t now;
@@ -321,15 +326,16 @@ cJSON* parse_json_from_frame(uint8_t *data, size_t data_len) {
     return root;
 }
 
-static void sigterm_handler(int sig) {
-  fprintf(stderr, "signal %d\n", sig);
-  quit = true;
-}
 
 void stop_media_cam(){
 
     quit = true;
 
+}
+
+void stop_all_media() {
+    quit_0 = true;
+    quit = true;
 }
 int ret ;
 
@@ -394,7 +400,7 @@ void save_around_trigger_video_async() {
             if (!sender.connectServer()) printf("Failed to connect to server.\n");
             cJSON *root = cJSON_CreateObject();
 
-            cJSON_AddNumberToObject(root, "msgid", global_msgid);
+            cJSON_AddNumberToObject(root, "msgid", global_cap_msgid);
             cJSON_AddNumberToObject(root, "msgcode", 7);
 
             cJSON_AddStringToObject(root, "result", "ok");
@@ -415,7 +421,20 @@ void save_around_trigger_video_async() {
     }
 }
 
+enum send_state {
+    cap_ontime = 0 ,
+    cap_alarm,
+    event_alarm,
+};
+void sender_send_message(int state) {
+    if (state==cap_ontime) {
 
+    }else if (state==cap_alarm) {
+
+    }else if (state==event_alarm) {
+
+    }
+}
 
 void save_around_trigger_jpeg_async() {
     const char * timestamp = cap_alarm_stamp;
@@ -498,7 +517,7 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
     /* 打印间隔：可以改成每 N 帧打印一次，减少刷屏 */
     static int cnt = 0;
     if (++cnt % 30 == 0)   // 每 30 帧打印一次
-        printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
+       // printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
     if (quit_0)
         return;
     //printf("video_packet_cb_chh0 is running \n");
@@ -654,7 +673,7 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
         Buffer buffer(new char[1024 * 1024]);
         if (size < (1024 * 1024)) {
             std::memcpy(buffer.get() + 19, data, size);
-            printf("4K packet size = %d\n",size);
+            //printf("4K packet size = %d\n",size);
             video_packet packet = {0};
             packet.buf = std::move(buffer);
             packet.size = size;
@@ -685,7 +704,7 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
 
     static int cnt = 0;
     if (++cnt % 1 == 0)   // 每 1 帧打印一次
-        printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
+       // printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
 
 
     //printf("jpeg_packet_cb_chh0 is running \n");
@@ -718,13 +737,32 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
                 if (cap_ontime_stamp!=NULL){
                 snprintf(filename, sizeof(filename), "%s%s.jpg",CAP_PIC_PATH,cap_ontime_stamp);
                 printf("filname: %s\n", filename);
-
                     FILE *fp = fopen(filename, "wb");
                 if (fp) {
                     fwrite(f_prev.data.get(), 1, f_prev.size, fp);
                     fclose(fp);
                     printf("Saved: %s\n", filename);
                 }
+
+                    TcpJsonSender sender("127.0.0.1", TCP_SENDER_PORT);
+                    if (!sender.connectServer()) printf("Failed to connect to server.\n");
+                    cJSON *root = cJSON_CreateObject();
+
+                    cJSON_AddNumberToObject(root, "msgid", global_cap_ontime_msgid);
+                    cJSON_AddNumberToObject(root, "msgcode", 7);
+
+                    cJSON_AddStringToObject(root, "result", "ok");
+                    if (sender.sendJson(root)) {
+                        std::cout << "JSON sent successfully!" << std::endl;
+                    } else {
+                        std::cout << "Send failed!" << std::endl;
+                    }
+
+                    // 5. 清理资源
+                    cJSON_Delete(root);
+                    sender.disconnect();
+
+
                 }
             }
 
@@ -814,7 +852,7 @@ void time_watermark_thread(int channel_id) {
 
 
     // 获取当前时间
-    while (true) {
+    while (!quit_0) {
         set_argb8888_buffer((RK_U32 *)BitMap.pData, wxh_size, TEST_ARGB32_TRANS);
         char time_str[32];
         get_time_string(time_str, sizeof(time_str));
@@ -1035,7 +1073,7 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     printf("#CodecName:%s\n", pCodecName);
     printf("#Resolution: %dx%d\n", u32Width, u32Height);
     printf("#Frame Count to save: %d\n", g_s32FrameCnt);
-    printf("#Output Path: %s\n", pOutPath);
+
     printf("#CameraIdx: %d\n\n", s32CamId);
 #ifdef RKAIQ
     printf("#bMultictx: %d\n\n", bMultictx);
@@ -1238,6 +1276,8 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
         cJSON *json = parse_json_from_frame(msg.data, msg.size);
         if (json) {
             int msgcode = -1;
+            char *formatted = cJSON_Print(json);
+            printf("格式化输出:\n%s\n", formatted);
             cJSON *temp = cJSON_GetObjectItem(json, "msgcode");
             msgcode = temp ? temp->valueint : -1;
 
@@ -1270,12 +1310,13 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
 
                         if (captureType == 0 ) {
                             /* cap ontime pic */
-
+                            global_cap_ontime_msgid = msgid;
                             thread0_jpeg_type = thread0_type_cap_ontime_pic;
                             cap_ontime_stamp = timeStamp_str;
                         }
                         else if (captureType == 1) {
                             /* cap alarm pic and video  */
+                            global_cap_msgid = msgid;
                             std::cout<< "cap function start"<<std::endl;
                             thread0_video_type = thread0_type_cap_video;
                             thread0_jpeg_type = thread0_type_cap_pic;
@@ -1301,6 +1342,30 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
 
                     case 8: {
                         /*  send alarm events */
+
+                        cJSON *item = NULL;
+
+                        item = cJSON_GetObjectItem(json, "msgid");
+                        if (cJSON_IsNumber(item)) {
+                            global_alarm_inform_msgid = item->valueint;
+                        }
+
+                        TcpJsonSender sender("127.0.0.1", GB28181_TCP_PORT);
+                        if (!sender.connectServer()) printf("Failed to connect to server.\n");
+                        cJSON *root = cJSON_CreateObject();
+
+                        cJSON_AddNumberToObject(root, "msgid", global_alarm_inform_msgid);
+                        cJSON_AddNumberToObject(root, "msgcode", 9);
+                        cJSON_AddStringToObject(root ,"result" ,"ok");
+
+
+                        if (sender.sendJson(root)) {
+                            std::cout << "JSON sent successfully!" << std::endl;
+                        } else {
+                            std::cout << "Send failed!" << std::endl;
+                        }
+                        cJSON_Delete(root);
+                        sender.disconnect();
                         break;
                     }
                 }
@@ -1327,9 +1392,20 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     // unbind first
     ret = RK_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
     if (ret) {
-        printf("ERROR: UnBind VI[0] and VENC[0] error! ret=%d\n", ret);
+        printf("ERROR: UnBind VI[0] and VENC[2] error! ret=%d\n", ret);
 
     }
+
+    ret = RK_MPI_SYS_UnBind(&stSrcChn, &stEncChn);
+    if (ret) {
+        printf("ERROR: UnBind VI[0] and VENC[0] error! ret=%d\n", ret);
+    }
+    ret = RK_MPI_VENC_DestroyChn(2);
+    if (ret) {
+        printf("ERROR: Destroy VENC[2] error! ret=%d\n", ret);
+
+    }
+
     // destroy venc before vi
     ret = RK_MPI_VENC_DestroyChn(0);
     if (ret) {
@@ -1340,8 +1416,11 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     ret = RK_MPI_VI_DisableChn(s32CamId, 0);
     if (ret) {
         printf("ERROR: Destroy VI[0] error! ret=%d\n", ret);
-
     }
+#ifdef RKAIQ
+    SAMPLE_COMM_ISP_Stop(s32CamId);
+#endif
+
 
 }
 int get_rv1126_nalu() {

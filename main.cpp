@@ -18,6 +18,7 @@
 #include <inttypes.h>
 #include <sstream>
 #include <random>
+#include <csignal>
 
 #include "tool.h"
 #include "record.h"
@@ -32,33 +33,70 @@
 #include "config.h"
 #include "tcp_client_receiver.h"
 #include "mpp_guard.hpp"
-
+extern "C"{
+#include "common/sample_common.h"
+}
+#include "rkmedia/rkmedia_api.h"
+#include "rkmedia/rkmedia_venc.h"
 using namespace  std ;
 extern bool thread0_start_play_ontime;
 char LOCAL_IP[30];
 char from[50];
 
 
+std::atomic<bool> running(true);
 
 SharedQueue sharedQueue; // 必须有实际定义
 
 SharedQueue sharedQueue_0; // 必须有实际定义
 
+void signal_handler(int) {
+    running = false;
+}
+
+
+int do_register(eXosip_t * context_exosip, char *from, char *proxy, char *contact, char * local_ip,int expire = 3600) {
+    int reg_id;
+    int ret ;
+    osip_message_t *reg = NULL;
+
+
+    reg_id = eXosip_register_build_initial_register(context_exosip, from, proxy, contact, 3600, &reg);
+    if (reg_id < 0) {
+        printf("eXosip_register_build_initial_register failed\n");
+
+        return -1;
+    }
+
+
+    ret = eXosip_register_send_register(context_exosip, reg_id, reg);
+    if (ret != 0) {
+        printf("eXosip_register_send_register failed\n");
+
+        return -1;
+    }
+
+    return 0 ;
+}
+
 int main() {
     //MppGuard::instance().install_signal_handlers();
 
+
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
     message_queue mq;
     if (get_interface_ip(NET_NAME, LOCAL_IP, sizeof(LOCAL_IP)) == 0) {
-        printf("USB0 IP Address: %s\n", LOCAL_IP);
+        printf("%s IP Address: %s\n", NET_NAME,LOCAL_IP);
     } else {
-        printf("Failed to get IP for eth0\n");
+        printf("Failed to get IP for %s\n",NET_NAME);
     }
     gb28181_functions* gb28181 = new gb28181_functions();
     sprintf(from, "sip:%s@%s:5060", SIP_USER,LOCAL_IP);
 
 
     eXosip_t *context_exosip;
-    osip_message_t *reg = NULL;
+
     int heartbeatInterval = 60;
 
     RtpSendPs *  mRtpSendPs= NULL;
@@ -66,7 +104,7 @@ int main() {
     RtpSendPs *  mRtpSendPs_record= NULL;
     RtpSendPs *  mRtpSendPs_download = NULL;
     xml_parser * parser = new xml_parser;
-    int reg_id, ret;
+    int  ret;
     int auth_ok = 0;
 
     context_exosip = eXosip_malloc();
@@ -82,42 +120,36 @@ int main() {
         return -1;
     }
     char proxy[128], contact[128];
-
-
     snprintf(proxy, sizeof(proxy), "sip:%s:%d", SERVER_IP, SERVER_PORT);
     snprintf(contact, sizeof(contact), "sip:%s@%s:%d", SIP_USER, LOCAL_IP, LOCAL_PORT);
+    ret = do_register(context_exosip, from, proxy, contact,LOCAL_IP,3600) ;
+    printf("register failed , try again later ...\n");
+    int try_count = 0;
+    while ( ret != 0) {
+        ret = do_register(context_exosip, from, proxy, contact,LOCAL_IP,3600) ;
+        sleep(try_count*2);
+        printf("register try ...... try count = %d",try_count++);
+        if (try_count >=5) {
+            eXosip_quit(context_exosip);
+            printf("register failed and kill the main");
+            return -1 ;
 
-
-    reg_id = eXosip_register_build_initial_register(context_exosip, from, proxy, contact, 3600, &reg);
-    if (reg_id < 0) {
-        printf("eXosip_register_build_initial_register failed\n");
-        eXosip_quit(context_exosip);
-        return -1;
+        }
     }
 
 
-
-    ret = eXosip_register_send_register(context_exosip, reg_id, reg);
-    if (ret != 0) {
-        printf("eXosip_register_send_register failed\n");
-        eXosip_quit(context_exosip);
-        return -1;
-    }
-
-    gb28181->send_keep_alive(context_exosip);
-    printf("等待服务器响应...\n");
 
 
     std::thread heartbeatThread(&gb28181_functions::heartbeatLoop, gb28181,heartbeatInterval,context_exosip,from, proxy, contact);
     std::thread chh0Thread(thread_chh0,std::ref(mq),context_exosip);
 
-    //tcp_receiver receiver(std::ref(mq), GB28181_TCP_PORT);
+    tcp_receiver receiver(std::ref(mq), GB28181_TCP_PORT);
 
-    //receiver.start();
-    tcp_client_receiver receiver(std::ref(mq),"127.0.0.1", GB28181_TCP_PORT);
     receiver.start();
-    while (1) {
-        
+    //tcp_client_receiver receiver(std::ref(mq),"127.0.0.1", GB28181_TCP_PORT);
+    //receiver.start();
+    while (running) {
+
         eXosip_event_t *event = eXosip_event_wait(context_exosip, 0, 50);
 
         if (event == NULL) {
@@ -126,7 +158,7 @@ int main() {
         }
         eXosip_lock(context_exosip);
         if(event->type){
-        printf("event-type=%d",event->type);
+        //printf("event-type=%d",event->type);
         }	
 
         if (event->type == EXOSIP_CALL_GLOBALFAILURE) {
@@ -495,28 +527,65 @@ int main() {
         {
 
 
+            if (event->response == NULL) {
+                printf("Registration failed: no response received (timeout or network issue)\n");
+                // 可以选择重试注册，而不是继续解析
+                ret = do_register(context_exosip, from, proxy, contact,LOCAL_IP,3600);
+                printf("register failed , try again later ...\n");
+                int try_count = 0;
+                while ( ret != 0) {
+                    ret = do_register(context_exosip, from, proxy, contact,LOCAL_IP,3600) ;
+                    sleep(try_count*2);
+                    printf("register try ...... try count = %d",try_count++);
+                    if (try_count >=5) {
+
+                        printf("register failed and kill the main");
+                        eXosip_quit(context_exosip);
+                        return 0 ;
+                        break;
+                    }
+                }
+
+
+                continue; // 或 continue;
+            }
+
             osip_message_t *reg = NULL;
             osip_www_authenticate_t *dest = NULL;
-            osip_message_get_www_authenticate(event->response,0,&dest);
-            if(dest == NULL)
-                continue;
-            char realm[256];
-            eXosip_clear_authentication_info(context_exosip);
-            strcpy(realm,osip_www_authenticate_get_realm(dest));
-            eXosip_add_authentication_info(context_exosip,USERNAME,SIP_USER,PASSWORD, "MD5",realm);
-            eXosip_register_build_register(context_exosip,event->rid, 3600, &reg);
-            if(reg==NULL)
-            {
-                printf("eXosip_register_build_register  failed!\n");
+
+            // 此时 event->response 非空，可以安全调用
+            int result = osip_message_get_www_authenticate(event->response, 0, &dest);
+            if (result != 0 || dest == NULL) {
+                printf("No WWW-Authenticate header in response\n");
                 continue;
             }
-            printf("authenticate=%s  ver=%s\n",realm,reg->sip_version);
-            ret = eXosip_register_send_register(context_exosip,event->rid,reg);
-	    if (ret != 0) {
-		printf("eXosip_register_send_register failed \n");
-		eXosip_quit(context_exosip);
 
-	    }
+            const char *realm_str = osip_www_authenticate_get_realm(dest);
+            if (realm_str == NULL) {
+                printf("No realm found in WWW-Authenticate header\n");
+                continue;
+            }
+
+            char realm[256];
+            strncpy(realm, realm_str, sizeof(realm) - 1);
+            realm[sizeof(realm) - 1] = '\0';
+
+            eXosip_clear_authentication_info(context_exosip);
+            eXosip_add_authentication_info(context_exosip, USERNAME, SIP_USER, PASSWORD, "MD5", realm);
+
+            int build_result = eXosip_register_build_register(context_exosip, event->rid, 3600, &reg);
+            if (build_result != 0 || reg == NULL) {
+                printf("eXosip_register_build_register failed!\n");
+                continue;
+            }
+
+            printf("authenticate=%s  ver=%s\n", realm, reg->sip_version);
+            int ret = eXosip_register_send_register(context_exosip, event->rid, reg);
+            if (ret != 0) {
+                printf("eXosip_register_send_register failed: %d\n", ret);
+                osip_message_free(reg);  // 发送失败，手动释放
+                // 注意：不要轻易 eXosip_quit()，应设计重试机制
+            }
 
 
         }
@@ -561,6 +630,16 @@ int main() {
 
 
     }
+    mRtpSendPs->stop();
+    mRtpSendPs_0->stop();
+    mRtpSendPs_record->stop();
+    mRtpSendPs_download->stop();
+
+    stop_all_media();
+    delete mRtpSendPs;
+    delete mRtpSendPs_0;
+    delete mRtpSendPs_record;
+    delete mRtpSendPs_download;
 
     return 0 ;
 

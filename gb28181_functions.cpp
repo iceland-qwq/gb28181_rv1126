@@ -65,10 +65,10 @@ int  gb28181_functions::get_interface_ip(const char* interface, char* ip_buf, si
 }
 
 gb28181_functions::gb28181_functions() {
-    if (get_interface_ip("eth0", LOCAL_IP, sizeof(LOCAL_IP)) == 0) {
-        printf("USB0 IP Address: %s\n", LOCAL_IP);
+    if (get_interface_ip(NET_NAME, LOCAL_IP, sizeof(LOCAL_IP)) == 0) {
+        printf("%s IP Address: %s\n",NET_NAME ,LOCAL_IP);
     } else {
-        printf("Failed to get IP for eth0\n");
+        printf("Failed to get IP for %s\n",NET_NAME);
     }
 
     sprintf(from, "sip:%s@%s:5060", SIP_USER,LOCAL_IP);
@@ -185,7 +185,7 @@ int gb28181_functions::send_keep_alive(eXosip_t *ctx) {
 
     ret = eXosip_message_send_request(ctx, response);
     eXosip_unlock(ctx);
-    printf("已发送keepalive : \n%s\n", keepalive_xml);
+    //printf("已发送keepalive : \n%s\n", keepalive_xml);
     return ret;
 }
 
@@ -257,7 +257,7 @@ int gb28181_functions::send_device_info_response(eXosip_t *ctx, int tid, int SN)
     osip_message_set_body(response, device_info_xml, strlen(device_info_xml));
 
     ret = eXosip_message_send_request(ctx, response);
-    printf("已发送设备信息响应: \n%s\n", device_info_xml);
+   // printf("已发送设备信息响应: \n%s\n", device_info_xml);
     return ret;
 }
 
@@ -321,7 +321,7 @@ int gb28181_functions::send_catalog_response(eXosip_t *ctx, int tid, int SN) {
     osip_message_set_body(response, catalog_xml, strlen(catalog_xml));
 
     ret = eXosip_message_send_request(ctx, response);
-    printf("已发送目录响应: \n%s\n", catalog_xml);
+    //printf("已发送目录响应: \n%s\n", catalog_xml);
     return ret;
 }
 
@@ -356,7 +356,7 @@ int gb28181_functions::send_DeviceStatus_response(eXosip_t *ctx, int tid, int SN
     osip_message_set_body(response, device_status_xml, strlen(device_status_xml));
 
     ret = eXosip_message_send_request(ctx, response);
-    printf("已发送目录响应: \n%s\n", device_status_xml);
+    //printf("已发送目录响应: \n%s\n", device_status_xml);
     return ret;
 }
 
@@ -413,7 +413,7 @@ int gb28181_functions::send_record_info_response(eXosip_t *ctx, int tid, int SN)
 
     ret = eXosip_message_send_request(ctx, response);
 #ifdef DEBUG
-    printf("已发送recordinfo响应: \n%s\n", xml_content.c_str());
+    //printf("已发送recordinfo响应: \n%s\n", xml_content.c_str());
 #endif
 
     return ret;
@@ -450,7 +450,7 @@ int gb28181_functions::send_ConfigDownload_response(eXosip_t *ctx, int tid, int 
     osip_message_set_body(response, config_download_xml, strlen(config_download_xml));
 
     ret = eXosip_message_send_request(ctx, response);
-    printf("已发送configDownload响应: \n%s\n", config_download_xml);
+   // printf("已发送configDownload响应: \n%s\n", config_download_xml);
     return ret;
 }
 
@@ -480,6 +480,6 @@ int gb28181_functions::send_Subscribe_response(eXosip_t *ctx, int tid, int SN) {
 
     osip_message_set_body(response, xml_body, strlen(xml_body));
     ret = eXosip_insubscription_send_answer(ctx, tid, 200, response);
-    printf("已发送subsribe响应: \n%s\n", xml_body);
+   // printf("已发送subsribe响应: \n%s\n", xml_body);
     return ret;
 }
