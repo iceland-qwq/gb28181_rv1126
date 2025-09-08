@@ -43,6 +43,8 @@ extern bool thread0_start_play_ontime;
 char LOCAL_IP[30];
 char from[50];
 
+extern message_queue mq ;
+extern tcp_client_receiver receiver;
 
 std::atomic<bool> running(true);
 
@@ -85,7 +87,7 @@ int main() {
 
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
-    message_queue mq;
+    receiver.start();
     if (get_interface_ip(NET_NAME, LOCAL_IP, sizeof(LOCAL_IP)) == 0) {
         printf("%s IP Address: %s\n", NET_NAME,LOCAL_IP);
     } else {
@@ -143,11 +145,10 @@ int main() {
     std::thread heartbeatThread(&gb28181_functions::heartbeatLoop, gb28181,heartbeatInterval,context_exosip,from, proxy, contact);
     std::thread chh0Thread(thread_chh0,std::ref(mq),context_exosip);
 
-    tcp_receiver receiver(std::ref(mq), GB28181_TCP_PORT);
+    //tcp_receiver receiver_(std::ref(mq), GB28181_TCP_PORT);
 
-    receiver.start();
-    //tcp_client_receiver receiver(std::ref(mq),"127.0.0.1", GB28181_TCP_PORT);
-    //receiver.start();
+    //receiver_.start();
+
     while (running) {
 
         eXosip_event_t *event = eXosip_event_wait(context_exosip, 0, 50);

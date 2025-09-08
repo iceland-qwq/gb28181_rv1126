@@ -7,7 +7,7 @@
 // 常量定义
 #define LOG_FILE "/root/lkt/revice.log"
 
-#define TCP_SENDER_PORT 5003
+
 
 
 // 函数声明

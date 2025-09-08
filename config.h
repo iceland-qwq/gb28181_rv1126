@@ -14,7 +14,7 @@
 
 #define LOCAL_PORT 5060
 #define GB28181_TCP_PORT 5003
-
+#define TCP_SENDER_PORT 5003
 
 #define SERVER_PORT 15060
 #define EXPIRES 3600
@@ -23,14 +23,14 @@
 #define CHANNEL_ID_ "34020000001330008758"
 
 
-#if 0
+#if 1
 #define to "sip:34020000001320000001@120.79.11.147:15060"
 #define SERVER_IP "120.79.11.147"
 #define NET_NAME "usb0"
 #else
 #define SERVER_IP "192.168.31.223"
 #define to "sip:34020000001320000001@192.168.31.223:15060"
-#define NET_NAME "eth0"
+#define NET_NAME "wlan0"
 #endif
 
 

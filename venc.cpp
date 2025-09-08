@@ -37,6 +37,8 @@ using namespace std::chrono;
 #include "record.h"
 #include "message_queue.h"
 #include "time_function.h"
+
+#include "tcp_client_receiver.h"
 extern "C"{
 #include "common/sample_common.h"
 #include "cJSON.h"
@@ -56,6 +58,8 @@ extern "C"{
 #include <cstring>
 #include <mutex>
 
+message_queue mq;
+tcp_client_receiver receiver(std::ref(mq),"127.0.0.1", GB28181_TCP_PORT);
 
 
 static char LOCAL_IP[50];
@@ -343,7 +347,70 @@ void sig_save_video(int sig) {
     printf("\nReceived SIGUSR1! Saving last 3 minutes...\n");
 
 }
+enum send_state {
+    cap_ontime = 0 ,
+    cap_alarm,
+    event_alarm,
+};
+void sender_send_message(int state) {
+    if (state==cap_ontime) {
+        /*
+        TcpJsonSender sender("127.0.0.1", GB28181_TCP_PORT);
+        if (!sender.connectServer()) printf("Failed to connect to server.\n");
+                sender.disconnect();*/
+        cJSON *root = cJSON_CreateObject();
 
+        cJSON_AddNumberToObject(root, "msgid", global_cap_ontime_msgid);
+        cJSON_AddNumberToObject(root, "msgcode", 7);
+
+        cJSON_AddStringToObject(root, "result", "ok");
+        if (receiver.send_json(root)) {
+            std::cout << "JSON sent successfully!" << std::endl;
+        } else {
+            std::cout << "Send failed!" << std::endl;
+        }
+
+        // 5. 清理资源
+        cJSON_Delete(root);
+
+
+    }else if (state==cap_alarm) {
+
+        cJSON *root = cJSON_CreateObject();
+
+        cJSON_AddNumberToObject(root, "msgid", global_cap_msgid);
+        cJSON_AddNumberToObject(root, "msgcode", 7);
+
+        cJSON_AddStringToObject(root, "result", "ok");
+        if (receiver.send_json(root)) {
+            std::cout << "JSON sent successfully!" << std::endl;
+        } else {
+            std::cout << "Send failed!" << std::endl;
+        }
+
+        // 5. 清理资源
+        cJSON_Delete(root);
+
+
+    }else if (state==event_alarm) {
+
+
+        cJSON *root = cJSON_CreateObject();
+
+        cJSON_AddNumberToObject(root, "msgid", global_alarm_inform_msgid);
+        cJSON_AddNumberToObject(root, "msgcode", 9);
+        cJSON_AddStringToObject(root ,"result" ,"ok");
+
+
+        if (receiver.send_json(root)) {
+            std::cout << "JSON sent successfully!" << std::endl;
+        } else {
+            std::cout << "Send failed!" << std::endl;
+        }
+        cJSON_Delete(root);
+
+    }
+}
 void save_around_trigger_video_async() {
     const char * timestamp = cap_alarm_stamp;
     std::unique_lock<std::mutex> cv_lock(post_frame_mutex);
@@ -395,25 +462,9 @@ void save_around_trigger_video_async() {
         waiting_for_post_frames = false;
         collected_post_frames = 0;
 
-            printf("USB0 IP Address: %s\n", LOCAL_IP);
-            TcpJsonSender sender("127.0.0.1", TCP_SENDER_PORT);
-            if (!sender.connectServer()) printf("Failed to connect to server.\n");
-            cJSON *root = cJSON_CreateObject();
 
-            cJSON_AddNumberToObject(root, "msgid", global_cap_msgid);
-            cJSON_AddNumberToObject(root, "msgcode", 7);
-
-            cJSON_AddStringToObject(root, "result", "ok");
-            if (sender.sendJson(root)) {
-                std::cout << "JSON sent successfully!" << std::endl;
-            } else {
-                std::cout << "Send failed!" << std::endl;
-            }
-
-            // 5. 清理资源
-            cJSON_Delete(root);
-            sender.disconnect();
-
+        std::thread send(sender_send_message,cap_alarm);
+        send.detach();
 
     }
     else {
@@ -421,20 +472,7 @@ void save_around_trigger_video_async() {
     }
 }
 
-enum send_state {
-    cap_ontime = 0 ,
-    cap_alarm,
-    event_alarm,
-};
-void sender_send_message(int state) {
-    if (state==cap_ontime) {
 
-    }else if (state==cap_alarm) {
-
-    }else if (state==event_alarm) {
-
-    }
-}
 
 void save_around_trigger_jpeg_async() {
     const char * timestamp = cap_alarm_stamp;
@@ -627,6 +665,62 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
         }
     }
 
+    if (!is_night_time()) {
+        if (black_flag==0) {
+            SAMPLE_COMM_ISP_SET_Saturation(0,0);
+            printf("set black sucess\n");
+            black_flag = 1;
+
+
+
+            cJSON *root = cJSON_CreateObject();
+
+            cJSON_AddNumberToObject(root, "msgid", global_msgid+1);
+            cJSON_AddNumberToObject(root, "msgcode", 3);
+
+            cJSON_AddNumberToObject(root, "filter", 1);
+            if (receiver.send_json(root)) {
+                std::cout << "JSON sent successfully!" << std::endl;
+            } else {
+                std::cout << "Send failed!" << std::endl;
+            }
+
+            // 5. 清理资源
+            cJSON_Delete(root);
+
+
+        }
+
+    }
+    else {
+        if (black_flag == 1) {
+            SAMPLE_COMM_ISP_SET_Saturation(0,128);
+            printf("set color sucess\n");
+            black_flag = 0;
+
+
+
+            cJSON *root = cJSON_CreateObject();
+
+            cJSON_AddNumberToObject(root, "msgid", global_msgid+1);
+            cJSON_AddNumberToObject(root, "msgcode", 3);
+
+            cJSON_AddNumberToObject(root, "filter", 0);
+
+            if (receiver.send_json(root)) {
+                std::cout << "JSON sent successfully!" << std::endl;
+            } else {
+                std::cout << "Send failed!" << std::endl;
+            }
+
+            // 5. 清理资源
+            cJSON_Delete(root);
+
+
+
+        }
+    }
+
 
 
     // ===== 2. 写入数据 =====
@@ -719,7 +813,6 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
             thread0_jpeg_type = thread0_type_normol;
             std::thread cap_jpeg(save_around_trigger_jpeg_async);
 
-
             cap_jpeg.detach();
             break;
         }
@@ -738,29 +831,31 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
                 snprintf(filename, sizeof(filename), "%s%s.jpg",CAP_PIC_PATH,cap_ontime_stamp);
                 printf("filname: %s\n", filename);
                     FILE *fp = fopen(filename, "wb");
-                if (fp) {
-                    fwrite(f_prev.data.get(), 1, f_prev.size, fp);
-                    fclose(fp);
-                    printf("Saved: %s\n", filename);
-                }
+                    if (fp) {
+                        size_t written = fwrite(f_prev.data.get(), 1, f_prev.size, fp);
+                        if (written != f_prev.size) {
+                            // 写入失败：部分或全部未写入
+                            fprintf(stderr, "Error: Failed to write complete data to %s. Written: %zu, Expected: %zu\n",
+                                    filename, written, f_prev.size);
+                            fclose(fp); // 尽管出错，仍需关闭文件
+                            std::thread send(sender_send_message, cap_ontime);
+                            send.detach();
+                            // 可选：发送错误通知或记录日志
+                        } else {
+                            printf("Saved: %s\n", filename);
+                            // 异步发送成功消息
+                            std::thread send(sender_send_message, cap_ontime);
+                            send.detach();
+                        }
 
-                    TcpJsonSender sender("127.0.0.1", TCP_SENDER_PORT);
-                    if (!sender.connectServer()) printf("Failed to connect to server.\n");
-                    cJSON *root = cJSON_CreateObject();
-
-                    cJSON_AddNumberToObject(root, "msgid", global_cap_ontime_msgid);
-                    cJSON_AddNumberToObject(root, "msgcode", 7);
-
-                    cJSON_AddStringToObject(root, "result", "ok");
-                    if (sender.sendJson(root)) {
-                        std::cout << "JSON sent successfully!" << std::endl;
+                        if (fclose(fp) != 0) {
+                            fprintf(stderr, "Error: Failed to close file %s\n", filename);
+                            // 处理 fclose 错误（例如磁盘 I/O 错误）
+                        }
                     } else {
-                        std::cout << "Send failed!" << std::endl;
+                        fprintf(stderr, "Error: Failed to open file %s for writing\n", filename);
                     }
 
-                    // 5. 清理资源
-                    cJSON_Delete(root);
-                    sender.disconnect();
 
 
                 }
@@ -937,69 +1032,7 @@ void video_packet_cb(MEDIA_BUFFER mb) {
 
     char is_black[50];
     /*
-    if (!is_night_time()) {
-        if (black_flag==0) {
-            SAMPLE_COMM_ISP_SET_Saturation(0,0);
-            printf("set black sucess\n");
-            black_flag = 1;
 
-
-
-
-                TcpJsonSender sender("127.0.0.1", GB28181_TCP_PORT);
-                if (!sender.connectServer()) printf("Failed to connect to server.\n");
-                cJSON *root = cJSON_CreateObject();
-
-                cJSON_AddNumberToObject(root, "msgid", global_msgid+1);
-                cJSON_AddNumberToObject(root, "msgcode", 3);
-                cJSON_AddNumberToObject(root, "switch", 1);
-                cJSON_AddNumberToObject(root, "lightness", 100);
-                cJSON_AddNumberToObject(root, "filter", 1);
-                cJSON_AddNumberToObject(root, "lightauto", 1);
-                if (sender.sendJson(root)) {
-                    std::cout << "JSON sent successfully!" << std::endl;
-                } else {
-                    std::cout << "Send failed!" << std::endl;
-                }
-
-                // 5. 清理资源
-                cJSON_Delete(root);
-                sender.disconnect();
-
-        }
-
-    }
-    else {
-        if (black_flag == 1) {
-            SAMPLE_COMM_ISP_SET_Saturation(0,128);
-            printf("set color sucess\n");
-            black_flag = 0;
-
-
-
-                TcpJsonSender sender("127.0.0.1", GB28181_TCP_PORT);
-                if (!sender.connectServer()) printf("Failed to connect to server.\n");
-                cJSON *root = cJSON_CreateObject();
-
-                cJSON_AddNumberToObject(root, "msgid", global_msgid+1);
-                cJSON_AddNumberToObject(root, "msgcode", 3);
-                cJSON_AddNumberToObject(root, "switch", 1);
-                cJSON_AddNumberToObject(root, "lightness", 100);
-                cJSON_AddNumberToObject(root, "filter", 0);
-                cJSON_AddNumberToObject(root, "lightauto", 1);
-                if (sender.sendJson(root)) {
-                    std::cout << "JSON sent successfully!" << std::endl;
-                } else {
-                    std::cout << "Send failed!" << std::endl;
-                }
-
-                // 5. 清理资源
-                cJSON_Delete(root);
-                sender.disconnect();
-
-
-        }
-    }
   */
     // === 2. 获取数据 ===
     void *data = RK_MPI_MB_GetPtr(mb);
@@ -1276,8 +1309,6 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
         cJSON *json = parse_json_from_frame(msg.data, msg.size);
         if (json) {
             int msgcode = -1;
-            char *formatted = cJSON_Print(json);
-            printf("格式化输出:\n%s\n", formatted);
             cJSON *temp = cJSON_GetObjectItem(json, "msgcode");
             msgcode = temp ? temp->valueint : -1;
 
@@ -1295,6 +1326,7 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
                         item = cJSON_GetObjectItem(json, "msgid");
                         if (cJSON_IsNumber(item)) {
                             msgid = item->valueint;
+
                         }
 
                         item = cJSON_GetObjectItem(json, "timeStamp");
@@ -1349,23 +1381,8 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
                         if (cJSON_IsNumber(item)) {
                             global_alarm_inform_msgid = item->valueint;
                         }
-
-                        TcpJsonSender sender("127.0.0.1", GB28181_TCP_PORT);
-                        if (!sender.connectServer()) printf("Failed to connect to server.\n");
-                        cJSON *root = cJSON_CreateObject();
-
-                        cJSON_AddNumberToObject(root, "msgid", global_alarm_inform_msgid);
-                        cJSON_AddNumberToObject(root, "msgcode", 9);
-                        cJSON_AddStringToObject(root ,"result" ,"ok");
-
-
-                        if (sender.sendJson(root)) {
-                            std::cout << "JSON sent successfully!" << std::endl;
-                        } else {
-                            std::cout << "Send failed!" << std::endl;
-                        }
-                        cJSON_Delete(root);
-                        sender.disconnect();
+                        std::thread send(sender_send_message,event_alarm);
+                        send.detach();
                         break;
                     }
                 }
@@ -1571,8 +1588,8 @@ int get_rv1126_nalu() {
   while (!quit) {
     usleep(500000);
   }
-  
-  
+
+
 
   if (g_output_file)
     fclose(g_output_file);
