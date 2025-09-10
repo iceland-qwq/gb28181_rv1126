@@ -32,6 +32,7 @@
 // 常量定义
 
 
+
 // 全局变量
 static unsigned int g_sn_counter = 0;
 
@@ -268,7 +269,47 @@ int gb28181_functions::send_catalog_response(eXosip_t *ctx, int tid, int SN) {
         printf("构建目录响应消息失败\n");
         return -1;
     }
-
+/* 2channel
+ *
+    *        "<?xml version=\"1.0\" encoding=\"GB2312\"?>\n"
+            "<Response>\n"
+            "<CmdType>Catalog</CmdType>\n"
+            "<SN>%u</SN>\n"
+            "<DeviceID>%s</DeviceID>\n"
+            "<SumNum>2</SumNum>\n"
+            "<DeviceList Num=\"2\">\n"
+           "<Item>\n"
+            "<DeviceID>%s</DeviceID>\n"
+            "<Name>IPC</Name>\n"
+            "<Manufacturer>Manufacturer</Manufacturer>\n"
+            "<Model>Model</Model>\n"
+            "<Owner>Owner</Owner>\n"
+            "<CivilCode>3402000000</CivilCode>\n"
+            "<Address>Address</Address>\n"
+            "<Parental>0</Parental>\n"
+            "<ParentID>%s</ParentID>\n"
+            "<RegisterWay>1</RegisterWay>\n"
+            "<Secrecy>0</Secrecy>\n"
+            "<Status>ON</Status>\n"
+            "</Item>\n"
+            "<Item>\n"
+            "<DeviceID>%s</DeviceID>\n"
+            "<Name>IPC</Name>\n"
+            "<Manufacturer>Manufacturer</Manufacturer>\n"
+            "<Model>Model</Model>\n"
+            "<Owner>Owner</Owner>\n"
+            "<CivilCode>3402000000</CivilCode>\n"
+            "<Address>Address</Address>\n"
+            "<Parental>0</Parental>\n"
+            "<ParentID>%s</ParentID>\n"
+            "<RegisterWay>1</RegisterWay>\n"
+            "<Secrecy>0</Secrecy>\n"
+            "<Status>ON</Status>\n"
+            "</Item>\n"
+            "</DeviceList>\n"
+            "</Response>",
+ *
+ */
     char catalog_xml[2048];
     snprintf(catalog_xml, sizeof(catalog_xml),
         "<?xml version=\"1.0\" encoding=\"GB2312\"?>\n"
@@ -276,23 +317,8 @@ int gb28181_functions::send_catalog_response(eXosip_t *ctx, int tid, int SN) {
         "<CmdType>Catalog</CmdType>\n"
         "<SN>%u</SN>\n"
         "<DeviceID>%s</DeviceID>\n"
-        "<SumNum>2</SumNum>\n"
-        "<DeviceList Num=\"2\">\n"
-        "<Item>\n"
-        "<DeviceID>%s</DeviceID>\n"
-        "<Name>IPC</Name>\n"
-        "<Manufacturer>Manufacturer</Manufacturer>\n"
-        "<Model>Model</Model>\n"
-        "<Owner>Owner</Owner>\n"
-        "<CivilCode>3402000000</CivilCode>\n"
-        "<Address>Address</Address>\n"
-        "<Parental>0</Parental>\n"
-        "<ParentID>%s</ParentID>\n"
-        "<RegisterWay>1</RegisterWay>\n"
-        "<Secrecy>0</Secrecy>\n"
-        "<Status>ON</Status>\n"
-        "</Item>\n"
-        "<Item>\n"
+        "<SumNum>1</SumNum>\n"
+        "<DeviceList Num=\"1\">\n"
         "<DeviceID>%s</DeviceID>\n"
         "<Name>IPC</Name>\n"
         "<Manufacturer>Manufacturer</Manufacturer>\n"
@@ -308,7 +334,7 @@ int gb28181_functions::send_catalog_response(eXosip_t *ctx, int tid, int SN) {
         "</Item>\n"
         "</DeviceList>\n"
         "</Response>",
-        SN, SIP_USER, CHANNEL_ID, SIP_USER,CHANNEL_ID_,SIP_USER);
+        SN, SIP_USER,CHANNEL_ID_,SIP_USER);
     osip_uri_t *new_uri = NULL;
     osip_uri_init(&new_uri);
     int res = osip_uri_parse(new_uri, to);

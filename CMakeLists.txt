@@ -49,6 +49,7 @@ add_executable(exosip_project
         tcp_client_receiver.cpp
         tcp_client_receiver.h
         mpp_guard.hpp
+        config_loader.h
 )
 
 

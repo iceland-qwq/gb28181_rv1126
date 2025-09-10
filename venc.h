@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <eXosip2/eXosip.h>
+
 #include "message_queue.h"
 extern "C"{
 #include "common/sample_common.h"
@@ -30,6 +31,15 @@ extern "C"{
 #define TEST_ARGB32_BLACK 0xFF000000
 #define TEST_ARGB32_TRANS 0x00000000
 extern bool thread0_start_play_ontime;
+
+
+// 1. 定义一个极简结构体，只做“引用计数 + 指针”，不 memcpy
+struct VencFrame {
+    MEDIA_BUFFER mb;   // 引用 RK 的 mb
+    uint32_t       size;
+    uint64_t       pts;
+};
+
 void stop_all_media() ;
 void stop_media_cam();
 void video_packet_cb(MEDIA_BUFFER mb);

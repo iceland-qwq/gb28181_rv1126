@@ -33,6 +33,8 @@
 #include "config.h"
 #include "tcp_client_receiver.h"
 #include "mpp_guard.hpp"
+#include "config_loader.h"
+
 extern "C"{
 #include "common/sample_common.h"
 }
@@ -83,6 +85,14 @@ int do_register(eXosip_t * context_exosip, char *from, char *proxy, char *contac
 
 int main() {
     //MppGuard::instance().install_signal_handlers();
+
+    if (init_config("config.json") != 0) {
+        fprintf(stderr, "Failed to load configuration\n");
+        return 1;
+    }
+
+    // 打印配置（调试用）
+    print_config();
 
 
     signal(SIGINT, signal_handler);
@@ -176,14 +186,10 @@ int main() {
             if (osip_message_get_body(event->request, 0, &body) == 0 && body != NULL && body->body != NULL) {
                 int sdp_type = extract_Slabel_content(body->body);
                 switch (sdp_type) {
-
                     case Play: {
                         cout<<"get body success!"<<endl;
-
                         cout << "invite request coming" <<endl;
                         cout << event->type<<endl;
-
-
                     if ( strstr(extract_o_from_sdp(body->body),CHANNEL_ID)){
                         ret = eXosip_call_build_answer(context_exosip, event->tid, 200, &response);
                         if (ret != 0) {
@@ -219,14 +225,12 @@ int main() {
 
                         osip_message_set_content_type(response, "application/sdp");
                         osip_message_set_body(response, sdp_body, strlen(sdp_body));
-
                         ret = eXosip_call_send_answer(context_exosip, event->tid, 200, response);
                         if (ret != 0) {
                             fprintf(stderr, "Failed to send 200 OK response.\n");
                         } else {
                             printf("Sent 200 OK with SDP:\n%s\n", sdp_body);
                         }
-
                         int port = get_first_media_port_from_sdp(body->body);
                         cout << "port " << port << endl;
                         free(SSRC);
@@ -247,7 +251,6 @@ int main() {
                         char* SSRC = extract_ssrc_from_sdp(body->body);
                         char* endptr;
                         uint32_t SSRC_t =strtoul(SSRC, &endptr, 10);
-
 
 
                         char sdp_body[1024];

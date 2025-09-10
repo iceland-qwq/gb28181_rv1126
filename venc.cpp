@@ -46,8 +46,7 @@ extern "C"{
 #include "rkmedia/rkmedia_api.h"
 #include "rkmedia/rkmedia_venc.h"
 
-#define DEVICE_ID "34020000001310008758"
-#define DEVICE_NAME"34020000001320008758"
+
 
 #define CAP_PIC_PATH "/root/data/monitor/"
 #define ALRAM_PATH "/root/data/alarm/"
@@ -104,7 +103,7 @@ static int thread0_jpeg_type = thread0_type_normol;
 // save alarm video pic structs
 
 // 定义缓冲区大小
-const int MAX_FRAMES = 900;
+const int MAX_FRAMES = 1800;
 // 每帧数据结构
 struct Frame {
     std::unique_ptr<uint8_t[]> data;
@@ -125,7 +124,7 @@ struct TriggerInfo {
 TriggerInfo trigger_info;
 // 全局变量：是否正在等待保存
 std::atomic<bool> waiting_for_post_frames{false};
-int required_post_frames = 450;
+int required_post_frames = MAX_FRAMES/2;
 int collected_post_frames = 0;
 
 // 用于通知保存完成
@@ -141,7 +140,8 @@ std::mutex post_frame_mutex;
  */
 
 // JPEG 环形缓冲区
-const int MAX_JPEG_FRAMES = 20; // 30fps * 20秒 = 600帧
+
+const int MAX_JPEG_FRAMES = 20;
 struct JpegFrame {
     std::unique_ptr<uint8_t[]> data;
     size_t size;
@@ -150,7 +150,7 @@ struct JpegFrame {
 std::vector<JpegFrame> jpeg_frame_buffer(MAX_JPEG_FRAMES);
 bool jpeg_buffer_full = false;
 int jpeg_write_index = 0;
-
+std::mutex jpeg_buffer_mutex;
 // 触发时的信息记录
 struct JpegTriggerInfo {
     int trigger_index = -1;
@@ -179,7 +179,7 @@ static int global_msgid = 1;
 static int global_alarm_inform_msgid = 1;
 
 static int global_cap_msgid = 1 ;
-
+static int global_black_msgid = 1;
 static int global_cap_ontime_msgid = 1 ;
 
 int is_night_time(void) {
@@ -338,8 +338,9 @@ void stop_media_cam(){
 }
 
 void stop_all_media() {
-    quit_0 = true;
+
     quit = true;
+    quit_0 = true;
 }
 int ret ;
 
@@ -351,7 +352,9 @@ enum send_state {
     cap_ontime = 0 ,
     cap_alarm,
     event_alarm,
+    event_black,
 };
+
 void sender_send_message(int state) {
     if (state==cap_ontime) {
         /*
@@ -410,12 +413,25 @@ void sender_send_message(int state) {
         cJSON_Delete(root);
 
     }
+    else if (state == event_black) {
+        cJSON *root = cJSON_CreateObject();
+
+        cJSON_AddNumberToObject(root, "msgid", global_black_msgid);
+        cJSON_AddNumberToObject(root, "msgcode", 11);
+        cJSON_AddStringToObject(root ,"result" ,"ok");
+        if (receiver.send_json(root)) {
+            std::cout << "JSON sent successfully!" << std::endl;
+        } else {
+            std::cout << "Send failed!" << std::endl;
+        }
+        cJSON_Delete(root);
+    }
 }
 void save_around_trigger_video_async() {
     const char * timestamp = cap_alarm_stamp;
     std::unique_lock<std::mutex> cv_lock(post_frame_mutex);
     printf("save method start \n");
-    // 等待收集够 900 帧
+    // 等待收集够 1800 帧
     post_frame_cv.wait(cv_lock, [] {
         return collected_post_frames >= required_post_frames;
     });
@@ -437,17 +453,17 @@ void save_around_trigger_video_async() {
 
         int trigger_idx = trigger_info.trigger_index;
 
-        // 保存前900帧
-        for (int i = 0; i < 450; ++i) {
-            int idx = (trigger_idx - 450 + i + MAX_FRAMES) % MAX_FRAMES;
+        // 保存前1800帧
+        for (int i = 0; i < MAX_FRAMES/2; ++i) {
+            int idx = (trigger_idx - MAX_FRAMES/2 + i + MAX_FRAMES) % MAX_FRAMES;
             auto& f = frame_buffer[idx];
             if (f.size > 0) {
                 fwrite(f.data.get(), 1, f.size, fp);
             }
         }
 
-        // 保存后900帧
-        for (int i = 0; i < 450; ++i) {
+        // 保存后1800帧
+        for (int i = 0; i < MAX_FRAMES/2; ++i) {
             int idx = (trigger_idx + i) % MAX_FRAMES;
             auto& f = frame_buffer[idx];
             if (f.size > 0) {
@@ -456,7 +472,7 @@ void save_around_trigger_video_async() {
         }
 
         fclose(fp);
-        printf("✅ Saved 900 frames around trigger\n");
+        printf("✅ Saved 1800 frames around trigger\n");
 
         // 重置状态
         waiting_for_post_frames = false;
@@ -475,16 +491,17 @@ void save_around_trigger_video_async() {
 
 
 void save_around_trigger_jpeg_async() {
+
     const char * timestamp = cap_alarm_stamp;
     std::unique_lock<std::mutex> cv_lock(jpeg_post_frame_mutex);
     printf("JPEG save method start\n");
 
-    // 等待收集够 300 帧（10秒）
+    // 等待收集够
     jpeg_post_frame_cv.wait(cv_lock, [] {
         return collected_jpeg_post_frames >= required_jpeg_post_frames;
     });
 
-    std::lock_guard<std::mutex> lock(buffer_mutex);
+    std::lock_guard<std::mutex> lock(jpeg_buffer_mutex);
     int trigger_idx = jpeg_trigger_info.trigger_index;
 
     // 构建文件名前缀
@@ -545,19 +562,75 @@ void save_around_trigger_jpeg_async() {
 
 
 }
-void video_packet_cb_chh0(MEDIA_BUFFER mb) {
 
+void video_packet_cb_chh0_task(FILE *h264_file,void *data,size_t size,MEDIA_BUFFER mb) {
+
+    std::lock_guard<std::mutex> lock(buffer_mutex);  //  线程安全
+
+    Frame& current_frame = frame_buffer[write_index];
+
+    // 释放旧数据（如果存在）
+    if (current_frame.data) {
+        current_frame.data.reset();
+    }
+
+    // 分配新内存并拷贝 H.264 数据
+    current_frame.data = std::make_unique<uint8_t[]>(size);
+    std::memcpy(current_frame.data.get(), data, size);
+    current_frame.size = size;
+
+    int flag = RK_MPI_MB_GetFlag(mb);
+    //RK_MPI_MB_TsNodeDump(mb);
+    RK_MPI_MB_ReleaseBuffer(mb);
+    // 更新缓冲区状态
+    write_index = (write_index + 1) % MAX_FRAMES;
+    if (write_index == 0) {
+        buffer_full = true;  // 缓冲区已满
+    }
+    pthread_mutex_lock(&file_mutex);
+    if (h264_file) {
+        if (fwrite(current_frame.data.get(), 1, current_frame.size, h264_file) != size) {
+            fprintf(stderr, "Failed to write to file.\n");
+        }
+    } else {
+        fprintf(stderr, "No file open, dropping packet.\n");
+    }
+    pthread_mutex_unlock(&file_mutex);
+
+
+
+    if (thread0_start_play_ontime) {
+        bool is_idr = (flag == VENC_NALU_IDRSLICE);
+        Buffer buffer(new char[1024 * 1024]);
+        if (size < (1024 * 1024)) {
+            std::memcpy(buffer.get() + 19, current_frame.data.get(), current_frame.size);
+            //printf("4K packet size = %d\n",size);
+            video_packet packet = {0};
+            packet.buf = std::move(buffer);
+            packet.size = size;
+            packet.isIFrame = is_idr;
+            sharedQueue_0.enqueue(std::move(packet));
+        }
+    }
+
+
+
+}
+void video_packet_cb_chh0(MEDIA_BUFFER mb) {
+    /*
     static steady_clock::time_point last = steady_clock::now();
     steady_clock::time_point now_ = steady_clock::now();
     int64_t delta_us = duration_cast<microseconds>(now_ - last).count();
     last = now_;
-
+    */
     /* 打印间隔：可以改成每 N 帧打印一次，减少刷屏 */
+    /*
     static int cnt = 0;
     if (++cnt % 30 == 0)   // 每 30 帧打印一次
        // printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
     if (quit_0)
         return;
+    */
     //printf("video_packet_cb_chh0 is running \n");
 
 
@@ -581,7 +654,6 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
             cap_video.detach();
             break;
         }
-
 
     }
 
@@ -699,7 +771,6 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
             black_flag = 0;
 
 
-
             cJSON *root = cJSON_CreateObject();
 
             cJSON_AddNumberToObject(root, "msgid", global_msgid+1);
@@ -717,7 +788,6 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
             cJSON_Delete(root);
 
 
-
         }
     }
 
@@ -732,57 +802,9 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
         return;
     }
 
+    std::thread video_packet_db_chh0_run_task(video_packet_cb_chh0_task,h264_file,data,size,mb);
+    video_packet_db_chh0_run_task.detach();
 
-
-    std::lock_guard<std::mutex> lock(buffer_mutex);  //  线程安全
-
-    Frame& current_frame = frame_buffer[write_index];
-
-    // 释放旧数据（如果存在）
-    if (current_frame.data) {
-        current_frame.data.reset();
-    }
-
-    // 分配新内存并拷贝 H.264 数据
-    current_frame.data = std::make_unique<uint8_t[]>(size);
-    std::memcpy(current_frame.data.get(), data, size);
-    current_frame.size = size;
-
-    // 更新缓冲区状态
-    write_index = (write_index + 1) % MAX_FRAMES;
-    if (write_index == 0) {
-        buffer_full = true;  // 缓冲区已满
-    }
-    pthread_mutex_lock(&file_mutex);
-    if (h264_file) {
-        if (fwrite(data, 1, size, h264_file) != size) {
-            fprintf(stderr, "Failed to write to file.\n");
-        }
-    } else {
-        fprintf(stderr, "No file open, dropping packet.\n");
-    }
-    int flag = RK_MPI_MB_GetFlag(mb);
-    if (thread0_start_play_ontime) {
-        bool is_idr = (flag == VENC_NALU_IDRSLICE);
-        Buffer buffer(new char[1024 * 1024]);
-        if (size < (1024 * 1024)) {
-            std::memcpy(buffer.get() + 19, data, size);
-            //printf("4K packet size = %d\n",size);
-            video_packet packet = {0};
-            packet.buf = std::move(buffer);
-            packet.size = size;
-            packet.isIFrame = is_idr;
-            sharedQueue_0.enqueue(std::move(packet));
-        }
-    }
-
-
-
-
-    RK_MPI_MB_TsNodeDump(mb);
-    RK_MPI_MB_ReleaseBuffer(mb);
-
-    pthread_mutex_unlock(&file_mutex);
 }
 
 
@@ -790,7 +812,7 @@ void video_packet_cb_chh0(MEDIA_BUFFER mb) {
 void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
     if (quit_0)
         return;
-
+    /*
     static steady_clock::time_point last = steady_clock::now();
     steady_clock::time_point now_ = steady_clock::now();
     int64_t delta_us = duration_cast<microseconds>(now_ - last).count();
@@ -799,9 +821,51 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
     static int cnt = 0;
     if (++cnt % 1 == 0)   // 每 1 帧打印一次
        // printf("[ch0] frame=%d delta=%ld us\n", cnt, delta_us);
-
+*/
 
     //printf("jpeg_packet_cb_chh0 is running \n");
+
+
+
+    void *data = RK_MPI_MB_GetPtr(mb);
+    size_t size = RK_MPI_MB_GetSize(mb);
+
+    if (!data || size == 0) {
+        fprintf(stderr, "Invalid MEDIA_BUFFER data or size is zero.\n");
+        return;
+    }
+    JpegFrame& current_frame_jepg = jpeg_frame_buffer[jpeg_write_index];
+
+    // 释放旧数据（如果存在）
+    if (current_frame_jepg.data) {
+        current_frame_jepg.data.reset();
+    }
+
+    // 分配新内存并拷贝 JPEG 数据
+    current_frame_jepg.data = std::make_unique<uint8_t[]>(size);
+    std::memcpy(current_frame_jepg.data.get(), data, size);
+    current_frame_jepg.size = size;
+    current_frame_jepg.timestamp = time(nullptr); // 可选
+
+
+    // 更新缓冲区状态
+    jpeg_write_index = (jpeg_write_index + 1) % MAX_JPEG_FRAMES;
+    if (jpeg_write_index == 0) {
+        jpeg_buffer_full = true;
+    }
+
+    // 检查是否在等待后置帧
+    if (waiting_for_jpeg_post_frames) {
+        std::lock_guard<std::mutex> cv_lock(jpeg_post_frame_mutex);
+        collected_jpeg_post_frames ++;
+        printf("collected_post_frames: %d\n", collected_jpeg_post_frames );
+        // 如果收集够了，通知保存线程
+        if (collected_jpeg_post_frames  >= required_jpeg_post_frames ) {
+            jpeg_post_frame_cv.notify_one();
+        }
+    }
+
+
     switch (thread0_jpeg_type) {
         case thread0_type_normol: {
 
@@ -867,45 +931,8 @@ void jpeg_packet_cb_chh0(MEDIA_BUFFER mb) {
     }
 
 
-
-    void *data = RK_MPI_MB_GetPtr(mb);
-    size_t size = RK_MPI_MB_GetSize(mb);
-
-    if (!data || size == 0) {
-        fprintf(stderr, "Invalid MEDIA_BUFFER data or size is zero.\n");
-        return;
-    }
-    JpegFrame& current_frame_jepg = jpeg_frame_buffer[jpeg_write_index];
-
-    // 释放旧数据（如果存在）
-    if (current_frame_jepg.data) {
-        current_frame_jepg.data.reset();
-    }
-
-    // 分配新内存并拷贝 JPEG 数据
-    current_frame_jepg.data = std::make_unique<uint8_t[]>(size);
-    std::memcpy(current_frame_jepg.data.get(), data, size);
-    current_frame_jepg.size = size;
-    current_frame_jepg.timestamp = time(nullptr); // 可选
-
-    RK_MPI_MB_TsNodeDump(mb);
+    //RK_MPI_MB_TsNodeDump(mb);
     RK_MPI_MB_ReleaseBuffer(mb);
-    // 更新缓冲区状态
-    jpeg_write_index = (jpeg_write_index + 1) % MAX_JPEG_FRAMES;
-    if (jpeg_write_index == 0) {
-        jpeg_buffer_full = true;
-    }
-
-    // 检查是否在等待后置帧
-    if (waiting_for_jpeg_post_frames) {
-        std::lock_guard<std::mutex> cv_lock(jpeg_post_frame_mutex);
-        collected_jpeg_post_frames ++;
-        printf("collected_post_frames: %d\n", collected_jpeg_post_frames );
-        // 如果收集够了，通知保存线程
-        if (collected_jpeg_post_frames  >= required_jpeg_post_frames ) {
-            jpeg_post_frame_cv.notify_one();
-        }
-    }
 
 }
 void jpeg_packet_thread(int channel_id) {
@@ -1052,7 +1079,7 @@ void video_packet_cb(MEDIA_BUFFER mb) {
         sharedQueue.enqueue(std::move(packet));
     }
 
-    RK_MPI_MB_TsNodeDump(mb);
+    //RK_MPI_MB_TsNodeDump(mb);
     RK_MPI_MB_ReleaseBuffer(mb);
 
     packet_cnt++;
@@ -1069,9 +1096,10 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     VENC_RECV_PIC_PARAM_S stRecvParam;
 
     //RK_U32 u32Height = 2160;
-    RK_U32 u32Width = 1280;
-    RK_U32 u32Height = 720;
-    const RK_CHAR *pDeviceName = "rkispp_scale1";
+    RK_U32 u32Width = 1920;
+    RK_U32 u32Height = 1080;
+    const RK_CHAR *pDeviceName = "rkispp_scale0";
+    //const RK_CHAR *pDeviceName = "/dev/video30";
     RK_CHAR *pOutPath = NULL;
     const RK_CHAR *pIqfilesPath = "/etc/iqfiles";
     CODEC_TYPE_E enCodecType = RK_CODEC_TYPE_H264;
@@ -1084,6 +1112,13 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     stSrcChn.s32DevId = 0;
     stSrcChn.s32ChnId = 0;
 
+
+    MPP_CHN_S stSrcChn2;
+    stSrcChn.enModId = RK_ID_VI;
+    stSrcChn.s32DevId = 0;
+    stSrcChn.s32ChnId = 2;
+
+
     MPP_CHN_S stDestChn;
     stDestChn.enModId = RK_ID_VENC;
     stDestChn.s32DevId = 0;
@@ -1095,11 +1130,11 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     stEncChn.s32ChnId = 0;
 
 
-#ifdef RKAIQ
+
     RK_BOOL bMultictx = RK_FALSE;
     RK_U32 u32Fps = 30;
     rk_aiq_working_mode_t hdr_mode = RK_AIQ_WORKING_MODE_NORMAL;
-#endif
+
 
 
     printf("#Device: %s\n", pDeviceName);
@@ -1108,13 +1143,8 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     printf("#Frame Count to save: %d\n", g_s32FrameCnt);
 
     printf("#CameraIdx: %d\n\n", s32CamId);
-#ifdef RKAIQ
-    printf("#bMultictx: %d\n\n", bMultictx);
-    printf("#Aiq xml dirpath: %s\n\n", pIqfilesPath);
-#endif
 
     if (pIqfilesPath) {
-#ifdef RKAIQ
 
 
         if (SAMPLE_COMM_ISP_Init(s32CamId, hdr_mode, bMultictx, pIqfilesPath)==-1) {
@@ -1133,8 +1163,10 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
         }
 
         SAMPLE_COMM_ISP_SetFrameRate(s32CamId, u32Fps);
+        SAMPLE_COMM_ISP_SET_Saturation(0,128);
+        printf("set Saturation 128\n");
 
-#endif
+
     }
 
     if (pOutPath) {
@@ -1159,6 +1191,13 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     if (ret) {
         printf("ERROR: create VI[0] error! ret=%d\n", ret);
     }
+
+    ret = RK_MPI_VI_SetChnAttr(s32CamId, 2, &vi_chn_attr);
+    ret |= RK_MPI_VI_EnableChn(s32CamId, 2);
+    if (ret) {
+        printf("ERROR: create VI[0] error! ret=%d\n", ret);
+    }
+
  VENC_CHN_ATTR_S venc_chn_attr;
   memset(&venc_chn_attr, 0, sizeof(venc_chn_attr));
   switch (enCodecType) {
@@ -1187,13 +1226,15 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     venc_chn_attr.stVencAttr.enType = RK_CODEC_TYPE_H264;
     venc_chn_attr.stRcAttr.enRcMode = VENC_RC_MODE_H264VBR;
 
-    venc_chn_attr.stRcAttr.stH264Vbr.u32Gop = 60;
-    venc_chn_attr.stRcAttr.stH264Vbr.u32MaxBitRate = u32Width * u32Height *0.5;
+    venc_chn_attr.stRcAttr.stH264Vbr.u32Gop = 30;
+    venc_chn_attr.stRcAttr.stH264Vbr.u32MaxBitRate = u32Width * u32Height  ;
     // frame rate: in 30/1, out 30/1.
     venc_chn_attr.stRcAttr.stH264Vbr.fr32DstFrameRateDen = 1;
-    venc_chn_attr.stRcAttr.stH264Vbr.fr32DstFrameRateNum = 15;
+    venc_chn_attr.stRcAttr.stH264Vbr.fr32DstFrameRateNum = 30;
     venc_chn_attr.stRcAttr.stH264Vbr.u32SrcFrameRateDen = 1;
     venc_chn_attr.stRcAttr.stH264Vbr.u32SrcFrameRateNum = 30;
+
+
     break;
   }
   venc_chn_attr.stVencAttr.imageType = IMAGE_TYPE_NV12;
@@ -1237,8 +1278,6 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     }
 
 
-
-
   ret = RK_MPI_SYS_RegisterOutCb(&stEncChn, video_packet_cb_chh0);
   if (ret) {
     printf("ERROR: register output callback for VENC[0] error! ret=%d\n", ret);
@@ -1266,9 +1305,9 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
   }
 
 
-    ret = RK_MPI_SYS_Bind(&stSrcChn, &stDestChn);
+    ret = RK_MPI_SYS_Bind(&stSrcChn2, &stDestChn);
     if (ret) {
-        printf("ERROR: Bind VI[0] and VENC[2] error! ret=%d\n", ret);
+        printf("ERROR: Bind VI[2] and VENC[2] error! ret=%d\n", ret);
 
     }
 
@@ -1385,6 +1424,34 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
                         send.detach();
                         break;
                     }
+                    case 10 : {
+                        /*  send black events */
+                        cJSON *item = NULL;
+                        item = cJSON_GetObjectItem(json, "msgid");
+                        if (cJSON_IsNumber(item)) {
+                            global_black_msgid = item->valueint;
+                        }
+                        item = cJSON_GetObjectItem(json,"mode");
+                        if (cJSON_IsString(item) && item->valuestring) {
+                            const char *mode = item->valuestring;
+
+                            printf("mode: %s\n", mode);
+                            if (strcmp(mode, "mono") == 0) {
+                                SAMPLE_COMM_ISP_SET_Saturation(0,0);
+                                printf("set black mode\n");
+                            }
+                            else if (strcmp(mode, "color") == 0) {
+                                SAMPLE_COMM_ISP_SET_Saturation(0,128);
+                                printf("set black mode\n");
+                            }
+                        }
+
+
+
+                        std::thread send(sender_send_message,event_black);
+                        send.detach();
+                        break;
+                    }
                 }
 
             }
@@ -1403,13 +1470,13 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     if (g_output_file)
         fclose(g_output_file);
 
-
+    sleep(2);
 
     printf("%s exit!\n", __func__);
     // unbind first
-    ret = RK_MPI_SYS_UnBind(&stSrcChn, &stDestChn);
+    ret = RK_MPI_SYS_UnBind(&stSrcChn2, &stDestChn);
     if (ret) {
-        printf("ERROR: UnBind VI[0] and VENC[2] error! ret=%d\n", ret);
+        printf("ERROR: UnBind VI[2] and VENC[2] error! ret=%d\n", ret);
 
     }
 
@@ -1417,10 +1484,10 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     if (ret) {
         printf("ERROR: UnBind VI[0] and VENC[0] error! ret=%d\n", ret);
     }
+
     ret = RK_MPI_VENC_DestroyChn(2);
     if (ret) {
         printf("ERROR: Destroy VENC[2] error! ret=%d\n", ret);
-
     }
 
     // destroy venc before vi
@@ -1434,9 +1501,12 @@ void thread_chh0(message_queue& mq,eXosip_t *context_exosip) {
     if (ret) {
         printf("ERROR: Destroy VI[0] error! ret=%d\n", ret);
     }
-#ifdef RKAIQ
+    ret = RK_MPI_VI_DisableChn(s32CamId, 2);
+    if (ret) {
+        printf("ERROR: Destroy VI[0] error! ret=%d\n", ret);
+    }
     SAMPLE_COMM_ISP_Stop(s32CamId);
-#endif
+
 
 
 }
@@ -1445,9 +1515,9 @@ int get_rv1126_nalu() {
  quit = false;
   //RK_U32 u32Width = 3840;
   //RK_U32 u32Height = 2160;
-  RK_U32 u32Width = 1920;
-  RK_U32 u32Height = 1080;
-  const RK_CHAR *pDeviceName = "rkispp_scale0";
+  RK_U32 u32Width = 1280;
+  RK_U32 u32Height = 720;
+  const RK_CHAR *pDeviceName = "rkispp_scale1";
   RK_CHAR *pOutPath = NULL;
   const RK_CHAR *pIqfilesPath = "/etc/iqfiles";
   CODEC_TYPE_E enCodecType = RK_CODEC_TYPE_H264;
@@ -1465,11 +1535,11 @@ int get_rv1126_nalu() {
   printf("#CodecName:%s\n", pCodecName);
   printf("#Resolution: %dx%d\n", u32Width, u32Height);
   printf("#Frame Count to save: %d\n", g_s32FrameCnt);
-  printf("#Output Path: %s\n", pOutPath);
+
   printf("#CameraIdx: %d\n\n", s32CamId);
 #ifdef RKAIQ
   printf("#bMultictx: %d\n\n", bMultictx);
-  printf("#Aiq xml dirpath: %s\n\n", pIqfilesPath);
+
 #endif
 
   if (pIqfilesPath) {
@@ -1588,7 +1658,6 @@ int get_rv1126_nalu() {
   while (!quit) {
     usleep(500000);
   }
-
 
 
   if (g_output_file)

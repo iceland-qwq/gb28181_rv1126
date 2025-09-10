@@ -1,0 +1,19 @@
+{
+  "sip_user": "34020000001320008758",
+  "username": "34020000001320008758",
+  "device_id": "34020000001310008758",
+  "device_name": "34020000001320008758",
+  "password": "Spepc123456",
+  "local_port": 5060,
+  "gb28181_tcp_port": 5003,
+  "server_port": 15060,
+  "expires": 3600,
+  "keepalive_interval": 60,
+  "channel_id": "34020000001310008758",
+  "channel_id_": "34020000001330008758",
+  "to": "sip:34020000001320000001@120.25.166.132:15060",
+  "server_ip": "120.25.166.132",
+  "net_name": "eth0",
+  "record_file": "/demo/lkt/record_data/record.csv",
+  "record_path": "/demo/lkt/lkt/record_data/"
+}

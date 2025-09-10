@@ -4,6 +4,7 @@
 #include <eXosip2/eXosip.h>
 #include <string>
 #include "config.h"
+#include "config_loader.h"
 // 常量定义
 #define LOG_FILE "/root/lkt/revice.log"
 
